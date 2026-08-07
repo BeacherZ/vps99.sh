@@ -1,17 +1,20 @@
-VPS 万能开荒脚本 v9.9 使用手册
-==============================================================================
+# VPS 万能开荒脚本 v9.9 使用手册
+
 --- 脚本名称：VPS 万能开荒脚本 (v9.9 Eternal Guard Edition)
- --- 更新日期：2026-05-08
- --- 适用系统：Debian 10+, Ubuntu 20+, Alpine Linux 3.15+
- ------------------------------------------------------------------------------
+
+--- 更新日期：2026-05-08
+
+--- 适用系统：Debian 10+, Ubuntu 20+, Alpine Linux 3.15+
+
  核心功能：
  1. 网络：开启 TCP-BBR 拥塞控制，提升网络吞吐并降低延迟。
  2. 内存：部署 zRAM 压缩交换区，提升物理内存承载上限。
  3. 容器：一键安装最新版 Docker Engine 与 Compose 插件。
  4. 守护：每周自动清理系统缓存、日志与容器垃圾，防止磁盘撑爆。
 
-1. 快速启动指令
-在 root 权限下执行以下命令即可开始：
+🚀 一键执行命令
+
+在终端复制并粘贴以下代码，即可自动下载并启动交互菜单：
 ```
 bash <(curl -fsSL https://gd.bzgogo.workers.dev/SH/vps99.sh)
 ```
@@ -19,7 +22,7 @@ bash <(curl -fsSL https://gd.bzgogo.workers.dev/SH/vps99.sh)
 ```
 bash <(curl -fsSL -H "Authorization: token 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" https://raw.githubusercontent.com/BeacherZ/vps99.sh/main/vps99.sh)
 ```
-2. 脚本功能模块清单
+## 1. 脚本功能模块清单
 本脚本采用模块化设计，运行后可自由选择执行以下任务：
 
 [系统环境探测]
@@ -50,7 +53,7 @@ bash <(curl -fsSL -H "Authorization: token ghp_Hj6UHeP6KDyZl82Vhg8oHdlHgIRBPF0Ia
 [即时清理]
 - 脚本运行结束后自动执行一次系统清理，无需手动触发
 
-3. 运维常用管理命令
+## 2. 运维常用管理命令
 目的                    对应指令
 检查定时清理计划        crontab -l
 手动立即执行清理        /root/vps99clean.sh
@@ -58,7 +61,7 @@ bash <(curl -fsSL -H "Authorization: token ghp_Hj6UHeP6KDyZl82Vhg8oHdlHgIRBPF0Ia
 查看网络算法状态        sysctl net.ipv4.tcp_congestion_control
 检测是否为 PVE 环境    command -v pveversion
 
-4. 关键注意事项
+## 3. 关键注意事项
 
 重启生效：若选择了基础优化（BBR、zRAM），脚本跑完后请输入 reboot 重启，
 让 BBR 内核模块生效并重新对齐 zRAM 的内存分配。若全部跳过则无需重启。
