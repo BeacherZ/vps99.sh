@@ -22,7 +22,7 @@ bash <(curl -fsSL https://gd.bzgogo.workers.dev/SH/vps99.sh)
 ```
 bash <(curl -fsSL -H "Authorization: token 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" https://raw.githubusercontent.com/BeacherZ/vps99.sh/main/vps99.sh)
 ```
-## 1. 脚本功能模块清单
+## 脚本功能模块清单
 本脚本采用模块化设计，运行后可自由选择执行以下任务：
 
 [系统环境探测]
@@ -53,7 +53,7 @@ bash <(curl -fsSL -H "Authorization: token ghp_Hj6UHeP6KDyZl82Vhg8oHdlHgIRBPF0Ia
 [即时清理]
 - 脚本运行结束后自动执行一次系统清理，无需手动触发
 
-## 2. 运维常用管理命令
+## 运维常用管理命令
 目的                    对应指令
 检查定时清理计划        crontab -l
 手动立即执行清理        /root/vps99clean.sh
@@ -61,7 +61,7 @@ bash <(curl -fsSL -H "Authorization: token ghp_Hj6UHeP6KDyZl82Vhg8oHdlHgIRBPF0Ia
 查看网络算法状态        sysctl net.ipv4.tcp_congestion_control
 检测是否为 PVE 环境    command -v pveversion
 
-## 3. 关键注意事项
+## 关键注意事项
 
 重启生效：若选择了基础优化（BBR、zRAM），脚本跑完后请输入 reboot 重启，
 让 BBR 内核模块生效并重新对齐 zRAM 的内存分配。若全部跳过则无需重启。
