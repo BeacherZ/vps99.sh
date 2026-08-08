@@ -74,14 +74,14 @@ bash <(curl -fsSL -H "Authorization: token ghp_Hj6UHeP6KDyZl82Vhg8oHdlHgIRBPF0Ia
 - 显示执行进度提示，不会卡在光标闪烁
 
 ## 运维常用管理命令
-目的                    对应指令
-检查定时清理计划        crontab -l
-手动立即执行清理        /root/vps99clean.sh
-查看内存压缩状态        zramctl
-查看网络算法状态        sysctl net.ipv4.tcp_congestion_control
-检测是否为 PVE 环境    command -v pveversion
-查看 Docker 版本       docker -v && docker compose version
-查看系统时区           cat /etc/timezone
+- 目的                    对应指令
+- 检查定时清理计划        crontab -l
+- 手动立即执行清理        /root/vps99clean.sh
+- 查看内存压缩状态        zramctl
+- 查看网络算法状态        sysctl net.ipv4.tcp_congestion_control
+- 检测是否为 PVE 环境    command -v pveversion
+- 查看 Docker 版本       docker -v && docker compose version
+- 查看系统时区           cat /etc/timezone
 
 ## 关键注意事项
 
