@@ -66,7 +66,7 @@ bash <(curl -fsSL -H "Authorization: token ghp_Hj6UHeP6KDyZl82Vhg8oHdlHgIRBPF0Ia
 - 部署 /root/vps99clean.sh 定时任务脚本，每周一 06:06 自动执行
 - Debian/Ubuntu：修复 dpkg 锁 + apt autoremove/clean/autoclean + journalctl 轮转限大小
 - Alpine：清空 /var/log 下文件内容（排除 /var/log/cdt），清理 apk 缓存和临时文件
-- Docker：清理虚悬镜像、截断容器日志
+- Docker：清理所有未使用的镜像、截断容器日志
 - PVE 保护：跳过 pkill apt/dpkg，跳过 journalctl --vacuum-time=1s，只限制日志 500M
 - 使用 --force-confold 确保 cron 无人值守执行不卡住
 
