@@ -51,7 +51,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/BeacherZ/vps99.sh/main/vps99
 - 安装/更新自动跳过 Docker 官方脚本 20 秒等待
 - 安装前自动修复 dpkg 锁状态
 - 安装后验证并显示实际版本，失败时明确提示
-- #### 卸载 包含清理 /var/lib/docker 和 /var/lib/containerd 请谨慎操作
+- ##### 卸载 包含清理 /var/lib/docker 和 /var/lib/containerd 请谨慎操作
 
 [系统时区]
 - 默认 N，需手动确认
