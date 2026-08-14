@@ -16,12 +16,9 @@
 
 在终端复制并粘贴以下代码，即可自动下载并启动交互菜单：
 ```
-bash <(curl -fsSL https://gd.bzgogo.workers.dev/SH/vps99.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/BeacherZ/vps99.sh/main/vps99.sh)
 ```
 
-```
-bash <(curl -fsSL -H "Authorization: token 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" https://raw.githubusercontent.com/BeacherZ/vps99.sh/main/vps99.sh)
-```
 ## 脚本功能模块清单
 本脚本采用模块化设计，运行后可自由选择执行以下任务：
 
