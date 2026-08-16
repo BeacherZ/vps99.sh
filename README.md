@@ -89,7 +89,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/BeacherZ/vps99.sh/main/vps99
 若全部跳过则无需重启。
 
 安全清理：Alpine 系统使用 truncate 清空日志文件内容，保留文件和目录结构，
-不会导致 nginx、xray 等服务因找不到日志目录而崩溃。
+不会导致 nginx 等服务因找不到日志目录而崩溃。
 
 PVE 兼容：脚本通过 command -v pveversion 自动检测 PVE 宿主机，
 跳过 pkill apt/dpkg 和 journalctl --vacuum-time=1s，
