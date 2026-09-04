@@ -64,7 +64,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/BeacherZ/vps99.sh/main/vps99
 - Debian/Ubuntu：修复 dpkg 锁 + apt autoremove/clean/autoclean + journalctl 轮转限大小
 - Alpine：清空 /var/log 下文件内容，清理 apk 缓存和临时文件
 - Docker：清理所有未使用的镜像、截断容器日志
-- PVE 保护：跳过 pkill apt/dpkg，跳过 journalctl --vacuum-time=1s，只限制日志 500M
+- PVE 保护：跳过 pkill apt/dpkg，跳过 journalctl --vacuum-time=1s，只限制日志 100m
 - 使用 --force-confold 确保 cron 无人值守执行不卡住
 
 [即时清理]
@@ -93,7 +93,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/BeacherZ/vps99.sh/main/vps99
 
 PVE 兼容：脚本通过 command -v pveversion 自动检测 PVE 宿主机，
 跳过 pkill apt/dpkg 和 journalctl --vacuum-time=1s，
-只做安全的缓存清理和日志限大小（500M），不影响宿主机稳定性。
+只做安全的缓存清理和日志限大小（100m），不影响宿主机稳定性。
 
 默认保守：除即时清理默认 Y 外，所有功能模块默认 N。
 每个选项执行后立即显示绿色结果反馈。
