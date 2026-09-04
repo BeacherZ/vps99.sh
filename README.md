@@ -61,7 +61,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/BeacherZ/vps99.sh/main/vps99
 [存储守护 - 定时清理]
 - 默认 N，需手动确认
 - 部署 /root/vps99clean.sh 定时任务脚本，每周一 06:06 自动执行
-- Debian/Ubuntu：修复 dpkg 锁 + apt autoremove/clean/autoclean + journalctl 轮转并限制日志上限为 100MB
+- Debian/Ubuntu：修复 dpkg 锁 + apt 深度清理 + journalctl 日志限 100M
 - Alpine：清空 /var/log 下文件内容，清理 apk 缓存和临时文件
 - Docker：清理所有未使用的镜像、截断容器日志
 - PVE 保护：跳过 pkill apt/dpkg，跳过 journalctl --vacuum-time=1s，只限制日志 100m
