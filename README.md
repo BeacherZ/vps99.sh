@@ -1,6 +1,4 @@
 # VPS 万能开荒脚本 (v9.9 Eternal Guard Edition)
-
- --- 更新日期：2026-08-08
  
  --- 适用系统：Debian 10+, Ubuntu 20+, Alpine Linux 3.15+
  
