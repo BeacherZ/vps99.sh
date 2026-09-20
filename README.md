@@ -33,8 +33,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/BeacherZ/vps99.sh/main/vps99
 
 [内存优化 - zRAM]
 - 默认 N，需手动确认
-- 内存 <=1GB：zRAM 按 1:1 分配，swappiness=90（激进使用，防 OOM）
-- 内存 >1GB：zRAM 按 60% 分配，swappiness=60（适度使用）
+- zRAM 大小：内存 ≤1GB 时按 100% 分配；内存 >1GB 时按 60% 分配
 - 压缩算法 lz4，优先级 100（高于磁盘 swap）
 - 安装时使用 --force-confold 避免 dpkg 配置文件冲突卡住
 - 需重启生效
