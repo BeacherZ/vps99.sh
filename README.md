@@ -29,7 +29,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/BeacherZ/vps99.sh/main/vps99
 - 默认 N，需手动确认
 - 同时配置 BBR 拥塞控制 + FQ 队列调度
 - 使用 sysctl_set 函数安全写入，避免重复追加，兼容配置文件空格格式
-- 需重启生效
+- 配置后自动验证，通常立即生效；若未生效，脚本会提示重启
 
 [内存优化 - zRAM]
 - 默认 N，需手动确认
