@@ -82,7 +82,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/BeacherZ/vps99.sh/main/vps99
 
 ## 关键注意事项
 
-重启生效：选择了 BBR+FQ 或 zRAM 后，脚本会明确提示需要 reboot。
+重启生效：选择了 BBR+FQ 或 zRAM 后，脚本检测后会按需提示 reboot。
 若全部跳过则无需重启。
 
 安全清理：Alpine 系统使用 truncate 清空日志文件内容，保留文件和目录结构，
