@@ -21,7 +21,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/BeacherZ/vps99.sh/main/vps99
 本脚本采用模块化设计，运行后可自由选择执行以下任务：
 
 [系统环境探测]
-- 自动识别 Debian / Ubuntu / Alpine，显示发行版名称 + 版本号（如 Debian 11、Ubuntu 22.04）
+- 自动识别 Debian / Ubuntu / Alpine，显示发行版名称 + 版本号
 - 自动采集硬件摘要，一行显示：核心数 · CPU 型号 · 内存大小 · 硬盘大小
 - 自动检测 PVE 宿主机环境，清理策略降级保护
 - 自动检测各功能模块当前状态（绿色=已就绪，黄色=未配置）
