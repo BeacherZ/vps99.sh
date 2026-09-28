@@ -1,15 +1,15 @@
 # VPS 基础开荒脚本 (v9.9 Eternal Guard Edition)
- 
- --- 适用系统：Debian 10+, Ubuntu 20+, Alpine Linux 3.15+
- 
- 核心功能：
- 1. 网络：开启 BBR+FQ 拥塞控制与队列调度，提升网络吞吐并降低延迟。
- 2. 内存：部署 zRAM 压缩交换区，提升物理内存承载上限。
- 3. 容器：安装/更新/卸载 Docker Engine 与 Compose 插件。
- 4. 时区：设置系统时区为 Asia/Shanghai。
- 5. 守护：每周自动清理系统缓存、日志与容器垃圾，防止磁盘撑爆。
- 6. 清理：立即执行一次系统清理。
- 
+
+--- 适用系统：Debian 10+, Ubuntu 20+, Alpine Linux 3.15+
+
+核心功能：
+1. 网络：开启 BBR+FQ 拥塞控制与队列调度，提升网络吞吐并降低延迟。
+2. 内存：部署 zRAM 压缩交换区，提升物理内存承载上限。
+3. 容器：安装/更新/卸载 Docker Engine 与 Compose 插件。
+4. 时区：设置系统时区为 Asia/Shanghai。
+5. 守护：每周自动清理系统缓存、日志与容器垃圾，防止磁盘撑爆。
+6. 清理：立即执行一次系统清理。
+
 🚀 一键执行命令
 
 在终端复制并粘贴以下代码，即可自动下载并启动交互菜单：
@@ -21,7 +21,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/BeacherZ/vps99.sh/main/vps99
 本脚本采用模块化设计，运行后可自由选择执行以下任务：
 
 [系统环境探测]
-- 自动识别 Debian / Ubuntu / Alpine，显示真实发行版与版本号
+- 自动识别 Debian / Ubuntu / Alpine，显示发行版名称 + 版本号（如 Debian 11、Ubuntu 22.04）
 - 自动采集硬件摘要，一行显示：核心数 · CPU 型号 · 内存大小 · 硬盘大小
 - 自动检测 PVE 宿主机环境，清理策略降级保护
 - 自动检测各功能模块当前状态（绿色=已就绪，黄色=未配置）
@@ -35,18 +35,20 @@ bash <(curl -fsSL https://raw.githubusercontent.com/BeacherZ/vps99.sh/main/vps99
 [内存优化 - zRAM]
 - 默认 N，需手动确认
 - zRAM 大小：内存 ≤1GB 时按 100% 分配；内存 >1GB 时按 60% 分配
+- swappiness 自适应：有物理 swap → 60；仅 zRAM → 小内存 80 / 大内存 60
 - 压缩算法 lz4，优先级 100（高于磁盘 swap）
 - 安装时使用 --force-confold 避免 dpkg 配置文件冲突卡住
 - 需重启生效
 
 [容器部署 - Docker]
 - 默认 N，选 y 进入二级管理菜单
-- 自动查询 GitHub API 获取 Docker 和 Compose 最新版本（超时 5 秒）
+- 自动查询 GitHub API 获取 Docker 和 Compose 最新版本（查询超时 5 秒，失败时跳过更新检查）
 - 已安装时显示版本对比：已是最新 / 可更新至 x.x.x
 - 已是最新：菜单只显示 1) 卸载 2) 跳过
 - 有可用更新：菜单显示 1) 更新 2) 卸载 3) 跳过
 - 未安装：菜单显示 1) 安装 2) 跳过
 - 安装/更新自动跳过 Docker 官方脚本 20 秒等待
+- 下载安装脚本带 60 秒超时保护，失败时明确提示（不误报成功）
 - 安装前自动修复 dpkg 锁状态
 - 安装后验证并显示实际版本，失败时明确提示
 - **卸载 包含清理 /var/lib/docker 和 /var/lib/containerd 请谨慎操作**
@@ -59,10 +61,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/BeacherZ/vps99.sh/main/vps99
 [存储守护 - 定时清理]
 - 默认 N，需手动确认
 - 部署 /root/vps99clean.sh 定时任务脚本，每周一 06:06 自动执行
-- Debian/Ubuntu：修复 dpkg 锁 + apt 深度清理 + journalctl 限制日志 100M
+- Debian/Ubuntu：修复 dpkg 锁 + apt 深度清理 + journalctl 保留 7 天 + 限制日志 100M
 - Alpine：清空 /var/log 下文件内容，清理 apk 缓存和临时文件
-- Docker：清理所有未使用的镜像、截断容器日志
-- PVE 保护：跳过 pkill apt/dpkg，跳过 journalctl --vacuum-time=1s，只限制日志 100M
+- Docker：清理所有未被容器使用的镜像（含悬空镜像）+ 截断容器日志
+- PVE 保护：跳过 pkill apt/dpkg，跳过 journalctl --vacuum-time，只限制日志 100M
 - 使用 --force-confold 确保 cron 无人值守执行不卡住
 
 [即时清理]
@@ -80,17 +82,19 @@ bash <(curl -fsSL https://raw.githubusercontent.com/BeacherZ/vps99.sh/main/vps99
 - 检测是否为 PVE          command -v pveversion
 - 查看 Docker 版本        docker -v && docker compose version
 - 查看系统时区            cat /etc/timezone
+- 查看 swappiness        cat /proc/sys/vm/swappiness
 
 ## 关键注意事项
 
-重启生效：选择了 BBR+FQ 或 zRAM 后，脚本检测后会按需提示 reboot。
+重启生效：选择了 BBR+FQ 或 zRAM 后，脚本会立即验证是否生效。
+BBR+FQ 通常立即生效；zRAM 首次部署通常需重启激活。
 若全部跳过则无需重启。
 
 安全清理：Alpine 系统使用 truncate 清空日志文件内容，保留文件和目录结构，
 不会导致 nginx 等服务因找不到日志目录而崩溃。
 
 PVE 兼容：脚本通过 command -v pveversion 自动检测 PVE 宿主机，
-跳过 pkill apt/dpkg 和 journalctl --vacuum-time=1s，
+跳过 pkill apt/dpkg 和 journalctl --vacuum-time，
 只做安全的缓存清理和日志限大小（100M），不影响宿主机稳定性。
 
 默认保守：除即时清理默认 Y 外，所有功能模块默认 N。
