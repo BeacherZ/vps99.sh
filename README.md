@@ -137,7 +137,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/BeacherZ/vps99.sh/main/vps99
 
 ### 适用原因
 
-阿里云镜像预装两份 `aliyun-assist`（旧版 + 新版），加上 journal、doc、man 等残留，长期运行后磁盘从 462M 涨到 520M 左右。1G 版专门清理这些，清理后稳定在 **420M 左右**（使用率 40%）。
+阿里云镜像预装两份 `aliyun-assist`（旧版 + 新版），加上 journal、doc、man 等残留，长期运行后磁盘从 462M 涨到 500M 以上，1G 版专门深度清理这些项目。
 
 ### 从通用版切换到 1G 版
 
@@ -155,8 +155,3 @@ rm -f /root/vps99clean.sh /root/vps99clean-1g.sh
 ### 建议
 
 **磁盘 ≥ 2G 用通用版；阿里云 CDT 1G 系统盘用 1G 版。**
-
-
-
-
-
