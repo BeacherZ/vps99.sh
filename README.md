@@ -1,7 +1,5 @@
 # VPS 基础开荒脚本 (v9.9 Eternal Guard Edition)
 
-<p align="center"><a href="README_EN.md">English</a> ｜ 简体中文</p>
-
 > 适用系统：Debian 10+ / Ubuntu 20+ / Alpine Linux 3.15+
 
 ## 核心功能
