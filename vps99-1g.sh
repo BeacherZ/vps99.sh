@@ -29,10 +29,36 @@ NC='\033[0m'
 NEED_REBOOT=0
 REBOOT_REASON=""
 
+# ------------------------------------------------------------------------------
+# 运行前置检查：必须有 root 权限 + 交互式终端
+# 非交互执行（curl | bash、ssh host < script）会让所有 read 立即 EOF，
+# 默认值接管后即时清理会自动执行，因此在此直接拦截。
+# ------------------------------------------------------------------------------
+if [ "$(id -u)" -ne 0 ]; then
+    printf "${RED}错误: 请以 root 权限运行（sudo bash <脚本>）${NC}\n"
+    exit 1
+fi
+
+if [ ! -t 0 ]; then
+    printf "${RED}错误: 本脚本需要交互式终端${NC}\n"
+    printf "${YELLOW}提示: 请先下载到本地再执行，不要使用 curl | bash 或重定向输入${NC}\n"
+    exit 1
+fi
+
+# ------------------------------------------------------------------------------
+# 清理策略参数（通用版）
+# ------------------------------------------------------------------------------
+JOURNAL_MAX_SIZE="10M"
+JOURNAL_MAX_TIME=""
+CLEAN_PATH="/root/vps99clean-1g.sh"
+
 # 统一清理：临时文件 + 后台进度条
 # dash 的 EXIT trap 在 SIGINT 下不保证触发，所以额外接 INT/TERM
 cleanup() {
     [ -n "${PROGRESS_PID:-}" ] && kill "$PROGRESS_PID" 2>/dev/null
+    if [ -n "${DL_TMPD:-}" ] && [ "$DL_TMPD" != "/tmp" ]; then
+        rm -rf "$DL_TMPD" 2>/dev/null
+    fi
     rm -f /tmp/get-docker.sh 2>/dev/null
 }
 trap cleanup EXIT
@@ -47,34 +73,130 @@ fi
 sysctl_set() {
     key="$1"
     value="$2"
-    if grep -q "^${key}[[:space:]]*=" /etc/sysctl.conf 2>/dev/null; then
-        sed -i "s|^${key}[[:space:]]*=.*|${key}=${value}|" /etc/sysctl.conf
+    # 键名里的 . 必须转义，否则会被 sed 当成"任意字符"匹配
+    esc=$(printf '%s' "$key" | sed 's/\./\\./g')
+    if grep -q "^${esc}[[:space:]]*=" /etc/sysctl.conf 2>/dev/null; then
+        sed -i "s|^${esc}[[:space:]]*=.*|${key}=${value}|" /etc/sysctl.conf
     else
-        echo "${key}=${value}" >> /etc/sysctl.conf
+        printf '%s=%s\n' "$key" "$value" >> /etc/sysctl.conf
     fi
 }
 
-fix_dpkg() {
-    if [ "$IS_PVE" -eq 1 ]; then
-        rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock
-        DEBIAN_FRONTEND=noninteractive dpkg --configure -a --force-confold 2>/dev/null
-    else
-        pkill -9 -x apt-get 2>/dev/null
-        pkill -9 -x apt     2>/dev/null
-        pkill -9 -x dpkg    2>/dev/null
-        rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock
-        DEBIAN_FRONTEND=noninteractive dpkg --configure -a --force-confold 2>/dev/null
+# 等待 dpkg 锁，绝不 kill 正在运行的包管理器
+# 旧实现用 pkill -9 强杀 dpkg/apt-get/apt，可能在无人值守升级窗口内
+# 打断包数据库写入；cron 场景下每周重复，属于定时炸弹。
+# 用子 shell 承载 fd 重定向：exec 重定向失败在某些 sh 下会直接终止脚本。
+wait_dpkg_lock() {
+    if command -v flock >/dev/null 2>&1; then
+        (
+            if flock -w 300 8 2>/dev/null; then
+                DEBIAN_FRONTEND=noninteractive dpkg --configure -a --force-confold >/dev/null 2>&1
+                exit 0
+            fi
+            exit 1
+        ) 8>>/var/lib/dpkg/lock-frontend 2>/dev/null
+        return $?
     fi
+    # 无 flock 工具时：只清理确认无进程占用的残留锁
+    if pgrep -x dpkg >/dev/null 2>&1 || pgrep -x apt-get >/dev/null 2>&1 || pgrep -x apt >/dev/null 2>&1; then
+        return 1
+    fi
+    rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock 2>/dev/null
+    rm -f /var/lib/apt/lists/lock /var/cache/apt/archives/lock 2>/dev/null
+    return 0
+}
+
+fix_dpkg() {
+    if wait_dpkg_lock; then
+        DEBIAN_FRONTEND=noninteractive dpkg --configure -a --force-confold >/dev/null 2>&1
+        return 0
+    fi
+    return 1
+}
+
+# 清理模块扩展：1G 硬盘版深度清理
+deep_clean() {
+    # 文档 / man / 本机终端字体
+    rm -rf /usr/share/doc/* 2>/dev/null
+    rm -rf /usr/share/man/* 2>/dev/null
+    rm -rf /usr/share/consolefonts/* 2>/dev/null
+
+    # i18n 字符集 + locale 定义（保留 UTF-8 / en / zh / i18n 命名）
+    find /usr/share/i18n/charmaps -type f ! -name '*UTF-8*' -delete 2>/dev/null
+    find /usr/share/i18n/locales -type f ! -name '*en*' ! -name '*zh*' ! -name 'i18n*' -delete 2>/dev/null
+
+    # terminfo（保留常用终端类型，含 tmux / screen 等复用库）
+    find /usr/share/terminfo -type f \
+        ! -name 'xterm*' ! -name 'linux' ! -name 'screen*' ! -name 'tmux*' \
+        ! -name 'vt*' ! -name 'ansi' ! -name 'dumb' ! -name 'rxvt*' \
+        ! -name 'alacritty*' ! -name 'foot*' ! -name 'putty*' -delete 2>/dev/null
+
+    # locale 消息目录（保留 en / zh 全系 + 别名）
+    if [ -d /usr/share/locale ]; then
+        find /usr/share/locale -mindepth 1 -maxdepth 1 \
+            ! -name 'en' ! -name 'en_*' ! -name 'zh' ! -name 'zh_*' \
+            ! -name 'locale.alias' -exec rm -rf {} + 2>/dev/null
+    fi
+
+    # 云 VPS 用不到的无线 / 网卡固件
+    # 注意：不能用 {a,b,c} 大括号展开，Debian/Ubuntu 的 /bin/sh 是 dash，不支持
+    for _fw in netronome sb16 ath10k ath11k iwlwifi bnx2 bnx2x brcm mellanox qcom ti; do
+        rm -rf "/usr/lib/firmware/$_fw" 2>/dev/null
+    done
+
+    # Python 编译缓存（不写死版本号）
+    for _pydir in /usr/lib/python3* /usr/local/lib/python3*; do
+        [ -d "$_pydir" ] || continue
+        find "$_pydir" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null
+    done
+
+    # aliyun-assist 旧版本目录（优先保留 symlink 指向的运行版本，失效时取最大版本号）
+    if [ -d /usr/local/share/aliyun-assist ]; then
+        _aliyun_symlink="/usr/local/share/aliyun-assist/aliyun-service.symlink"
+        _aliyun_keep=""
+        if [ -L "$_aliyun_symlink" ]; then
+            _aliyun_keep=$(basename "$(dirname "$(readlink "$_aliyun_symlink")")" 2>/dev/null)
+        fi
+        if [ -z "$_aliyun_keep" ]; then
+            _aliyun_keep=$(ls -1 /usr/local/share/aliyun-assist/ 2>/dev/null \
+                | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+                | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | tail -1)
+        fi
+        # 只有确认是版本号格式才进入删除循环，防止 symlink 内容异常时误删全部
+        if [ -n "$_aliyun_keep" ] && echo "$_aliyun_keep" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+            for _v in /usr/local/share/aliyun-assist/[0-9]*/; do
+                [ -d "$_v" ] || continue
+                _vname=$(basename "$_v")
+                [ "$_vname" = "$_aliyun_keep" ] && continue
+                rm -rf "$_v" 2>/dev/null
+            done
+        fi
+    fi
+
+    # 旧日志（cdt 目录豁免）
+    find /var/log -type f \( -name '*.gz' -o -name '*.1' -o -name '*.old' \) ! -path '/var/log/cdt/*' -delete 2>/dev/null
 }
 
 do_clean() {
     if command -v apt >/dev/null 2>&1; then
-        fix_dpkg
-        apt autoremove --purge -y
-        apt clean -y
-        apt autoclean -y
-        journalctl --rotate
-        journalctl --vacuum-size=10M
+        # PVE 宿主机不动包管理器：autoremove 可能带走 proxmox 相关依赖，
+        # 一旦误删宿主环境恢复成本极高。仅做缓存与日志。
+        if [ "$IS_PVE" -eq 0 ]; then
+            if fix_dpkg; then
+                apt autoremove --purge -y
+            fi
+            apt clean -y
+            apt autoclean -y
+        fi
+        if command -v journalctl >/dev/null 2>&1; then
+            journalctl --rotate
+            if [ "$IS_PVE" -eq 1 ] || [ -z "$JOURNAL_MAX_TIME" ]; then
+                journalctl --vacuum-size="$JOURNAL_MAX_SIZE"
+            else
+                journalctl --vacuum-time="$JOURNAL_MAX_TIME"
+                journalctl --vacuum-size="$JOURNAL_MAX_SIZE"
+            fi
+        fi
     elif command -v apk >/dev/null 2>&1; then
         apk cache clean
         find /var/log -mindepth 1 \
@@ -88,44 +210,7 @@ do_clean() {
         find /var/lib/docker/containers/ -name "*.log" -exec truncate -s 0 {} \; 2>/dev/null
     fi
 
-    # ---------- 1G 硬盘专属深度清理 ----------
-    # 文档 / man / 本机终端字体
-    rm -rf /usr/share/doc/* 2>/dev/null
-    rm -rf /usr/share/man/* 2>/dev/null
-    rm -rf /usr/share/consolefonts/* 2>/dev/null
-    # i18n 字符集 + locale 文件（保留 UTF-8 / en / zh / i18n 命名）
-    find /usr/share/i18n/charmaps -type f ! -name '*UTF-8*' -delete 2>/dev/null
-    find /usr/share/i18n/locales -type f ! -name '*en*' ! -name '*zh*' ! -name 'i18n*' -delete 2>/dev/null
-    # terminfo（保留常用终端类型）
-    find /usr/share/terminfo -type f ! -name 'xterm*' ! -name 'linux' ! -name 'screen*' ! -name 'vt*' ! -name 'ansi' ! -name 'dumb' -delete 2>/dev/null
-    # locale（保留 en / zh）
-    ( cd /usr/share/locale 2>/dev/null && ls 2>/dev/null | grep -vE '^(en|zh|en_US|zh_CN|zh_TW|locale.alias)$' | xargs rm -rf 2>/dev/null )
-    # 云 VPS 用不到的固件
-    rm -rf /usr/lib/firmware/{netronome,sb16,ath10k,ath11k,iwlwifi,bnx2,bnx2x,brcm,mellanox,qcom,ti} 2>/dev/null
-    # Python 编译缓存
-    find /usr/lib/python3.13 -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null
-    # aliyun-assist 旧版本目录（优先保留 symlink 指向的运行版本；symlink 失效时退回"版本号最大"）
-    if [ -d /usr/local/share/aliyun-assist ]; then
-        _aliyun_symlink="/usr/local/share/aliyun-assist/aliyun-service.symlink"
-        _aliyun_keep=""
-        if [ -L "$_aliyun_symlink" ]; then
-            _aliyun_keep=$(basename "$(dirname "$(readlink "$_aliyun_symlink")")")
-        fi
-        if [ -z "$_aliyun_keep" ]; then
-            _aliyun_keep=$(ls -1 /usr/local/share/aliyun-assist/ 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
-        fi
-        # 只有确认是版本号格式才进入删除循环（防止 symlink 内容异常时误删全部）
-        if [ -n "$_aliyun_keep" ] && echo "$_aliyun_keep" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
-            for _v in /usr/local/share/aliyun-assist/[0-9]*/; do
-                [ -d "$_v" ] || continue
-                _vname=$(basename "$_v")
-                [ "$_vname" = "$_aliyun_keep" ] && continue
-                rm -rf "$_v" 2>/dev/null
-            done
-        fi
-    fi
-    # 旧日志（cdt 豁免）
-    find /var/log -type f \( -name '*.gz' -o -name '*.1' -o -name '*.old' \) ! -path '/var/log/cdt/*' -delete 2>/dev/null
+    deep_clean
 }
 
 remove_docker() {
@@ -142,8 +227,51 @@ remove_docker() {
 }
 
 check_docker_latest() {
-    LATEST_DOCKER=$(curl -s --connect-timeout 3 --max-time 5 "https://api.github.com/repos/moby/moby/releases/latest" 2>/dev/null | grep '"tag_name"' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
-    LATEST_COMPOSE=$(curl -s --connect-timeout 3 --max-time 5 "https://api.github.com/repos/docker/compose/releases/latest" 2>/dev/null | grep '"tag_name"' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+    # docker/cli 与 docker-ce 发行包版本同步，比 moby/moby 源码 tag 更贴近实际包版本
+    LATEST_DOCKER=$(curl -fsS --connect-timeout 3 --max-time 5 "https://api.github.com/repos/docker/cli/releases/latest" 2>/dev/null | grep '"tag_name"' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    LATEST_COMPOSE=$(curl -fsS --connect-timeout 3 --max-time 5 "https://api.github.com/repos/docker/compose/releases/latest" 2>/dev/null | grep '"tag_name"' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+}
+
+# 版本比较：$1 是否比 $2 新
+# busybox 的 sort 不支持 -V，这里用 awk 生成等长可排序键，任何环境都成立
+ver_newer() {
+    # 目标版本为空表示无参考值，不升级；
+    # 基线为空（如 Docker 已装但 Compose 缺失）视为需要安装/更新
+    [ -z "$1" ] && return 1
+    [ "$1" = "$2" ] && return 1
+    top=$(printf '%s\n%s\n' "$1" "$2" | awk -F. '{ printf "%06d%06d%06d %s\n", $1+0, $2+0, $3+0, $0 }' | sort | tail -1 | cut -d' ' -f2-)
+    [ "$top" = "$1" ]
+}
+
+# 通过官方 get.docker.com 安装/更新
+install_docker_official() {
+    DL_TMPD=$(mktemp -d /tmp/vps99.XXXXXX 2>/dev/null)
+    # mktemp 失败时退化为 /tmp，但只删文件、不删目录（避免误删整个 /tmp）
+    [ -z "$DL_TMPD" ] && DL_TMPD="/tmp"
+    DL_LOG="/var/log/vps99-docker-install.log"
+    DL_SH="$DL_TMPD/vps99-get-docker.sh"
+
+    if ! curl -fsSL --connect-timeout 5 --max-time 60 https://get.docker.com -o "$DL_SH" 2>/dev/null; then
+        rm -f "$DL_SH" 2>/dev/null
+        rmdir "$DL_TMPD" 2>/dev/null
+        DL_TMPD=""
+        return 1
+    fi
+
+    # 只清掉"卸载旧版本后等待用户确认"的那一行，不动其它 sleep
+    sed -i 's/^[[:space:]]*sleep 20[[:space:]]*$/: sleep 0/' "$DL_SH" 2>/dev/null
+
+    if sh "$DL_SH" >"$DL_LOG" 2>&1; then
+        rm -f "$DL_SH" 2>/dev/null
+        rmdir "$DL_TMPD" 2>/dev/null
+        DL_TMPD=""
+        return 0
+    fi
+
+    rm -f "$DL_SH" 2>/dev/null
+    rmdir "$DL_TMPD" 2>/dev/null
+    DL_TMPD=""
+    return 2
 }
 
 progress_slow() {
@@ -257,7 +385,7 @@ _mem_size=$(free -h 2>/dev/null | awk '/^Mem:/{print $2}' | sed 's/i$//')
 _disk_size=$(df -h / 2>/dev/null | awk 'NR==2{print $2}')
 [ -z "$_disk_size" ] && _disk_size="?"
 
-printf " - 系统环境 : ${OS_DISPLAY}  »  ${_cpu_cores}核 ${_cpu_short} / ${_mem_size}内存 / ${_disk_size}硬盘\n"
+printf " - 系统环境 : ${OS_DISPLAY}  »  ${_cpu_cores}核 %s / ${_mem_size}内存 / ${_disk_size}硬盘\n" "$_cpu_short"
 
 bbr_status=$(cat /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null || echo "")
 fq_status=$(cat /proc/sys/net/core/default_qdisc 2>/dev/null || echo "")
@@ -329,7 +457,7 @@ if [ $HAS_DOCKER -eq 1 ]; then
 else
     printf " - 容器部署 : ${YELLOW}未安装${NC}\n"
 fi
-[ "$CUR_TZ" = "Asia/Shanghai" ] && printf " - 系统时区 : ${GREEN}Asia/Shanghai${NC}\n" || printf " - 系统时区 : ${YELLOW}${CUR_TZ}${NC}\n"
+[ "$CUR_TZ" = "Asia/Shanghai" ] && printf " - 系统时区 : ${GREEN}Asia/Shanghai${NC}\n" || printf " - 系统时区 : ${YELLOW}%s${NC}\n" "$CUR_TZ"
 [ $HAS_CRON -eq 1 ] && printf " - 存储守护 : ${GREEN}已配置 (${CRON_TIME})${NC}\n" || printf " - 存储守护 : ${YELLOW}未部署${NC}\n"
 [ $IS_PVE -eq 1 ] && printf " - 运行环境 : ${YELLOW}PVE 宿主机 (清理已降级保护)${NC}\n"
 printf "${GREEN}--------------------------------------------------------------------------------${NC}\n"
@@ -346,44 +474,57 @@ printf "${GREEN}================================================================
 # 4.1 BBR+FQ
 if [ $HAS_BBR -eq 1 ]; then
     printf "网络算法 : ${BBR_LABEL}，是否覆盖配置? [y/N]: "
-    read bbr_confirm
+    read -r bbr_confirm
 else
     printf "网络算法 : 是否开启 BBR+FQ? [y/N]: "
-    read bbr_confirm
+    read -r bbr_confirm
 fi
 bbr_confirm=${bbr_confirm:-"n"}
 
 if [ "$bbr_confirm" = "y" ] || [ "$bbr_confirm" = "Y" ]; then
-    sysctl_set "net.core.default_qdisc" "fq"
-    sysctl_set "net.ipv4.tcp_congestion_control" "bbr"
-    sysctl -p >/dev/null 2>&1
+    # 先确认内核真的支持，否则写进配置重启也永远不会生效
+    modprobe tcp_bbr >/dev/null 2>&1
+    modprobe sch_fq >/dev/null 2>&1
+    _cc_avail=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null)
 
-    now_cc=$(cat /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null)
-    now_qdisc=$(cat /proc/sys/net/core/default_qdisc 2>/dev/null)
+    if echo "$_cc_avail" | grep -qw "bbr"; then
+        sysctl_set "net.core.default_qdisc" "fq"
+        sysctl_set "net.ipv4.tcp_congestion_control" "bbr"
+        sysctl -p >/dev/null 2>&1
 
-    if [ "$now_cc" = "bbr" ] && [ "$now_qdisc" = "fq" ]; then
-        printf "  ${GREEN}> BBR+FQ 已配置并立即生效，无需重启${NC}\n"
-        REPORT_BBR="${GREEN}BBR+FQ 已开启${NC}"
+        now_cc=$(cat /proc/sys/net/ipv4/tcp_congestion_control 2>/dev/null)
+        now_qdisc=$(cat /proc/sys/net/core/default_qdisc 2>/dev/null)
+
+        if [ "$now_cc" = "bbr" ] && [ "$now_qdisc" = "fq" ]; then
+            printf "  ${GREEN}> BBR+FQ 已配置并立即生效，无需重启${NC}\n"
+            REPORT_BBR="${GREEN}BBR+FQ 已开启${NC}"
+        else
+            printf "  ${YELLOW}> BBR+FQ 已写入配置，但未立即生效，重启后激活${NC}\n"
+            REPORT_BBR="${GREEN}BBR+FQ 已配置（待重启）${NC}"
+            NEED_REBOOT=1
+            REBOOT_REASON="${REBOOT_REASON:+$REBOOT_REASON }BBR+FQ 未立即生效;"
+        fi
     else
-        printf "  ${YELLOW}> BBR+FQ 已写入配置，但未立即生效，重启后激活${NC}\n"
-        REPORT_BBR="${GREEN}BBR+FQ 已配置（待重启）${NC}"
-        NEED_REBOOT=1
-        REBOOT_REASON="BBR+FQ 未立即生效"
+        printf "  ${RED}> 当前内核不支持 BBR（可用算法: %s），已跳过${NC}\n" "${_cc_avail:-未知}"
+        printf "  ${YELLOW}> OpenVZ / LXC 等共享内核环境无法启用，配置写入也不会生效${NC}\n"
+        REPORT_BBR="${RED}内核不支持 BBR${NC}"
     fi
 fi
 
 # 4.2 zRAM
 if [ $HAS_ZRAM -eq 1 ]; then
     printf "内存优化 : zRAM 已存在，是否覆盖配置? [y/N]: "
-    read zram_confirm
+    read -r zram_confirm
 else
     printf "内存优化 : 是否部署 zRAM? [y/N]: "
-    read zram_confirm
+    read -r zram_confirm
 fi
 zram_confirm=${zram_confirm:-"n"}
 
 if [ "$zram_confirm" = "y" ] || [ "$zram_confirm" = "Y" ]; then
-    total_mem=$(free -m | awk '/^Mem:/{print $2}')
+    total_mem=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}')
+    [ -z "$total_mem" ] && total_mem=$(awk '/MemTotal/{printf "%d", $2/1024}' /proc/meminfo 2>/dev/null)
+    [ -z "$total_mem" ] && total_mem=512
     zram_size=$([ "$total_mem" -le 1024 ] && echo "$total_mem" || echo "$((total_mem * 60 / 100))")
 
     phys_swap=$(awk 'NR>1 && $1 !~ /^\/dev\/zram/ {s+=$3} END{printf "%d", s/1024}' /proc/swaps 2>/dev/null)
@@ -397,20 +538,31 @@ if [ "$zram_confirm" = "y" ] || [ "$zram_confirm" = "Y" ]; then
     sysctl_set "vm.swappiness" "$swap_p"
     sysctl -p >/dev/null 2>&1
 
+    ZRAM_OK=0
     if [ "$OS" = "Alpine" ]; then
-        apk add zram-init >/dev/null 2>&1
-        printf "load_modules=\"yes\"\nnum_devices=\"1\"\ntype0=\"swap\"\nsize0=\"%s\"\nalgo0=\"lz4\"\n" "$zram_size" > /etc/conf.d/zram-init
-        rc-update add zram-init default >/dev/null 2>&1
-        rc-service zram-init start >/dev/null 2>&1
+        if apk add zram-init >/dev/null 2>&1; then
+            printf 'load_modules="yes"\nnum_devices="1"\ntype0="swap"\nsize0="%s"\nalgo0="lz4"\n' "$zram_size" > /etc/conf.d/zram-init
+            rc-update add zram-init default >/dev/null 2>&1
+            rc-service zram-init start >/dev/null 2>&1 && ZRAM_OK=1
+        fi
     else
-        DEBIAN_FRONTEND=noninteractive $INSTALL_CMD -o Dpkg::Options::="--force-confold" zram-tools >/dev/null 2>&1
-        printf "ALGO=lz4\nSIZE=%s\nPRIORITY=100\n" "$zram_size" > /etc/default/zramswap
-        systemctl restart zramswap >/dev/null 2>&1
+        if DEBIAN_FRONTEND=noninteractive $INSTALL_CMD -o Dpkg::Options::="--force-confold" zram-tools >/dev/null 2>&1; then
+            printf 'ALGO=lz4\nSIZE=%s\nPRIORITY=100\n' "$zram_size" > /etc/default/zramswap
+            systemctl restart zramswap >/dev/null 2>&1 && ZRAM_OK=1
+        fi
     fi
-    printf "  ${GREEN}> zRAM 已部署 (${zram_size}MB / swappiness=${swap_p})${NC}\n"
-    REPORT_ZRAM="${GREEN}已部署 (${zram_size}MB)${NC}"
-    NEED_REBOOT=1
-    REBOOT_REASON="${REBOOT_REASON} zRAM 服务首次加载需重启;"
+
+    if [ "$ZRAM_OK" -eq 1 ]; then
+        printf "  ${GREEN}> zRAM 已部署 (${zram_size}MB / swappiness=${swap_p})${NC}\n"
+        REPORT_ZRAM="${GREEN}已部署 (${zram_size}MB)${NC}"
+        if [ "$HAS_ZRAM" -eq 0 ]; then
+            NEED_REBOOT=1
+            REBOOT_REASON="${REBOOT_REASON:+$REBOOT_REASON }zRAM 服务首次加载需重启;"
+        fi
+    else
+        printf "  ${RED}> zRAM 部署失败（软件包安装或服务启动失败，请检查源与网络）${NC}\n"
+        REPORT_ZRAM="${RED}部署失败${NC}"
+    fi
 fi
 
 # 4.3 Docker
@@ -440,10 +592,10 @@ if [ $HAS_DOCKER -eq 1 ]; then
 
     printf "容器部署 : Docker ${DOCKER_VER} (${DOCKER_STATUS}) / Compose ${COMPOSE_VER} (${COMPOSE_STATUS})\n"
     printf "           是否管理? [y/N]: "
-    read docker_enter
+    read -r docker_enter
 else
     printf "容器部署 : 未安装，是否管理? [y/N]: "
-    read docker_enter
+    read -r docker_enter
 fi
 docker_enter=${docker_enter:-"n"}
 
@@ -451,28 +603,22 @@ if [ "$docker_enter" = "y" ] || [ "$docker_enter" = "Y" ]; then
     if [ $HAS_DOCKER -eq 1 ]; then
         NEED_DOCKER_UPDATE=0
         NEED_COMPOSE_UPDATE=0
-        if [ -n "$LATEST_DOCKER" ]; then
-            _newer_d=$(printf '%s\n%s\n' "$DOCKER_VER" "$LATEST_DOCKER" | sort -V 2>/dev/null | tail -1)
-            if [ "$_newer_d" = "$LATEST_DOCKER" ] && [ "$DOCKER_VER" != "$LATEST_DOCKER" ]; then
-                NEED_DOCKER_UPDATE=1
-            fi
+        if [ -n "$LATEST_DOCKER" ] && ver_newer "$LATEST_DOCKER" "$DOCKER_VER"; then
+            NEED_DOCKER_UPDATE=1
         fi
-        if [ -n "$LATEST_COMPOSE" ]; then
-            _newer_c=$(printf '%s\n%s\n' "$COMPOSE_VER" "$LATEST_COMPOSE" | sort -V 2>/dev/null | tail -1)
-            if [ "$_newer_c" = "$LATEST_COMPOSE" ] && [ "$COMPOSE_VER" != "$LATEST_COMPOSE" ]; then
-                NEED_COMPOSE_UPDATE=1
-            fi
+        if [ -n "$LATEST_COMPOSE" ] && ver_newer "$LATEST_COMPOSE" "$COMPOSE_VER"; then
+            NEED_COMPOSE_UPDATE=1
         fi
 
         if [ $NEED_DOCKER_UPDATE -eq 1 ] || [ $NEED_COMPOSE_UPDATE -eq 1 ]; then
             printf "           1) 更新  2) 卸载  3) 跳过\n"
             printf "           请选择 [3]: "
-            read docker_choice
+            read -r docker_choice
             docker_choice=${docker_choice:-"3"}
         else
             printf "           1) 卸载  2) 跳过\n"
             printf "           请选择 [2]: "
-            read docker_choice
+            read -r docker_choice
             docker_choice=${docker_choice:-"2"}
             case "$docker_choice" in
                 1) docker_choice="2" ;;
@@ -482,7 +628,7 @@ if [ "$docker_enter" = "y" ] || [ "$docker_enter" = "Y" ]; then
     else
         printf "           1) 安装  2) 跳过\n"
         printf "           请选择 [2]: "
-        read docker_choice
+        read -r docker_choice
         docker_choice=${docker_choice:-"2"}
     fi
 
@@ -494,7 +640,7 @@ if [ "$docker_enter" = "y" ] || [ "$docker_enter" = "Y" ]; then
             PROGRESS_PID=$!
 
             if [ "$OS" = "Debian" ]; then
-                fix_dpkg
+                fix_dpkg >/dev/null 2>&1
             fi
             if [ "$OS" = "Alpine" ]; then
                 apk add docker docker-cli-compose >/dev/null 2>&1
@@ -502,38 +648,45 @@ if [ "$docker_enter" = "y" ] || [ "$docker_enter" = "Y" ]; then
                 rc-service docker start >/dev/null 2>&1
             else
                 if [ $HAS_DOCKER -eq 0 ]; then
-                    if curl -fsSL --connect-timeout 5 --max-time 60 https://get.docker.com -o /tmp/get-docker.sh; then
-                        sed -i 's/sleep 20/sleep 0/' /tmp/get-docker.sh
-                        sh /tmp/get-docker.sh >/dev/null 2>&1
-                        rm -f /tmp/get-docker.sh
-                    else
-                        printf "  ${RED}> 下载 Docker 安装脚本失败，请检查网络${NC}\n"
-                        REPORT_DOCKER="${RED}安装失败（下载失败）${NC}"
-                    fi
+                    install_docker_official
+                    case $? in
+                        0) : ;;
+                        1) printf "  ${RED}> 下载 Docker 安装脚本失败，请检查网络${NC}\n"
+                           REPORT_DOCKER="${RED}安装失败（下载失败）${NC}" ;;
+                        *) printf "  ${RED}> Docker 安装脚本执行失败${NC}\n"
+                           printf "  ${YELLOW}> 详细日志: /var/log/vps99-docker-install.log${NC}\n"
+                           REPORT_DOCKER="${RED}安装失败（脚本报错）${NC}" ;;
+                    esac
                 else
                     if [ "$NEED_DOCKER_UPDATE" -eq 0 ] && [ "$NEED_COMPOSE_UPDATE" -eq 1 ]; then
                         printf "  Docker 已是最新，仅更新 Compose...\n"
-                        apt-get update -qq >/dev/null 2>&1
-                        apt-get install -y docker-compose-plugin >/dev/null 2>&1
+                        if apt-get update -qq >/dev/null 2>&1 && apt-get install -y docker-compose-plugin >/dev/null 2>&1; then
+                            :
+                        else
+                            printf "  ${RED}> Compose 更新失败，请检查网络与软件源${NC}\n"
+                            REPORT_DOCKER="${RED}更新失败（Compose）${NC}"
+                        fi
                     elif [ "$NEED_DOCKER_UPDATE" -eq 1 ] && [ "$NEED_COMPOSE_UPDATE" -eq 0 ]; then
                         printf "  Compose 已是最新，仅更新 Docker...\n"
-                        if curl -fsSL --connect-timeout 5 --max-time 60 https://get.docker.com -o /tmp/get-docker.sh; then
-                            sed -i 's/sleep 20/sleep 0/' /tmp/get-docker.sh
-                            sh /tmp/get-docker.sh >/dev/null 2>&1
-                            rm -f /tmp/get-docker.sh
-                        else
-                            printf "  ${RED}> 下载 Docker 安装脚本失败，请检查网络${NC}\n"
-                            REPORT_DOCKER="${RED}更新失败（下载失败）${NC}"
-                        fi
+                        install_docker_official
+                        case $? in
+                            0) : ;;
+                            1) printf "  ${RED}> 下载 Docker 安装脚本失败，请检查网络${NC}\n"
+                               REPORT_DOCKER="${RED}更新失败（下载失败）${NC}" ;;
+                            *) printf "  ${RED}> Docker 安装脚本执行失败${NC}\n"
+                               printf "  ${YELLOW}> 详细日志: /var/log/vps99-docker-install.log${NC}\n"
+                               REPORT_DOCKER="${RED}更新失败（脚本报错）${NC}" ;;
+                        esac
                     else
-                        if curl -fsSL --connect-timeout 5 --max-time 60 https://get.docker.com -o /tmp/get-docker.sh; then
-                            sed -i 's/sleep 20/sleep 0/' /tmp/get-docker.sh
-                            sh /tmp/get-docker.sh >/dev/null 2>&1
-                            rm -f /tmp/get-docker.sh
-                        else
-                            printf "  ${RED}> 下载 Docker 安装脚本失败，请检查网络${NC}\n"
-                            REPORT_DOCKER="${RED}更新失败（下载失败）${NC}"
-                        fi
+                        install_docker_official
+                        case $? in
+                            0) : ;;
+                            1) printf "  ${RED}> 下载 Docker 安装脚本失败，请检查网络${NC}\n"
+                               REPORT_DOCKER="${RED}更新失败（下载失败）${NC}" ;;
+                            *) printf "  ${RED}> Docker 安装脚本执行失败${NC}\n"
+                               printf "  ${YELLOW}> 详细日志: /var/log/vps99-docker-install.log${NC}\n"
+                               REPORT_DOCKER="${RED}更新失败（脚本报错）${NC}" ;;
+                        esac
                     fi
                 fi
             fi
@@ -550,7 +703,7 @@ if [ "$docker_enter" = "y" ] || [ "$docker_enter" = "Y" ]; then
             if command -v docker >/dev/null 2>&1; then
                 NEW_DOCKER_VER=$(docker -v | awk '{print $3}' | tr -d ',')
                 NEW_COMPOSE_VER=$(docker compose version 2>/dev/null | awk '{print $NF}' | tr -d 'v')
-                
+
                 if [ $HAS_DOCKER -eq 0 ]; then
                     printf "  ${GREEN}> Docker ${NEW_DOCKER_VER} / Compose ${NEW_COMPOSE_VER} 安装成功${NC}\n"
                     REPORT_DOCKER="${GREEN}Docker ${NEW_DOCKER_VER} / Compose ${NEW_COMPOSE_VER}${NC}"
@@ -612,62 +765,109 @@ fi
 # 4.4 时区设置
 if [ "$CUR_TZ" = "Asia/Shanghai" ]; then
     printf "系统时区 : 已是 Asia/Shanghai，是否重新设置? [y/N]: "
-    read tz_confirm
+    read -r tz_confirm
 else
     printf "系统时区 : 是否设置为 Asia/Shanghai? [y/N]: "
-    read tz_confirm
+    read -r tz_confirm
 fi
 tz_confirm=${tz_confirm:-"n"}
 
 if [ "$tz_confirm" = "y" ] || [ "$tz_confirm" = "Y" ]; then
+    TZ_OK=0
     if [ "$OS" = "Alpine" ]; then
         apk add tzdata >/dev/null 2>&1
-        cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
-        echo "Asia/Shanghai" > /etc/timezone
+        if cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime 2>/dev/null; then
+            printf 'Asia/Shanghai\n' > /etc/timezone
+            TZ_OK=1
+        fi
     else
-        ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
-        echo "Asia/Shanghai" > /etc/timezone
+        if ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime 2>/dev/null; then
+            printf 'Asia/Shanghai\n' > /etc/timezone
+            TZ_OK=1
+        fi
     fi
-    printf "  ${GREEN}> 时区已设置为 Asia/Shanghai${NC}\n"
-    REPORT_TZ="${GREEN}Asia/Shanghai${NC}"
+
+    if [ "$TZ_OK" -eq 1 ]; then
+        printf "  ${GREEN}> 时区已设置为 Asia/Shanghai${NC}\n"
+        REPORT_TZ="${GREEN}Asia/Shanghai${NC}"
+    else
+        printf "  ${RED}> 时区设置失败（时区数据缺失或权限不足）${NC}\n"
+        REPORT_TZ="${RED}设置失败${NC}"
+    fi
 fi
 
 # 4.5 存储守护
 if [ $HAS_CRON -eq 1 ]; then
     printf "存储守护 : 已存在，是否重写配置? [y/N]: "
-    read cron_confirm
+    read -r cron_confirm
 else
     printf "存储守护 : 是否部署定时清理 (每周一 06:06)? [y/N]: "
-    read cron_confirm
+    read -r cron_confirm
 fi
 cron_confirm=${cron_confirm:-"n"}
 
 if [ "$cron_confirm" = "y" ] || [ "$cron_confirm" = "Y" ]; then
-    CLEAN_PATH="/root/vps99clean-1g.sh"
-    cat > "$CLEAN_PATH" <<'CLEANEOF'
+    if ! command -v crontab >/dev/null 2>&1; then
+        printf "  ${RED}> 未找到 crontab 命令，无法部署定时任务${NC}\n"
+        if [ "$OS" = "Alpine" ]; then
+            printf "  ${YELLOW}> Alpine 请先执行: apk add cronie && rc-update add crond default && rc-service crond start${NC}\n"
+        else
+            printf "  ${YELLOW}> 请先安装 cron 服务（如 apt install cron）${NC}\n"
+        fi
+        REPORT_CRON="${RED}未部署（缺少 crontab）${NC}"
+    else
+        cat > "$CLEAN_PATH" <<'CLEANEOF'
 #!/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+JOURNAL_MAX_SIZE="@JOURNAL_MAX_SIZE@"
+JOURNAL_MAX_TIME="@JOURNAL_MAX_TIME@"
 
 IS_PVE=0
 if command -v pveversion >/dev/null 2>&1; then
     IS_PVE=1
 fi
 
+# 等待 dpkg 锁，绝不 kill 正在运行的包管理器
+wait_dpkg_lock() {
+    if command -v flock >/dev/null 2>&1; then
+        (
+            if flock -w 300 8 2>/dev/null; then
+                DEBIAN_FRONTEND=noninteractive dpkg --configure -a --force-confold >/dev/null 2>&1
+                exit 0
+            fi
+            exit 1
+        ) 8>>/var/lib/dpkg/lock-frontend 2>/dev/null
+        return $?
+    fi
+    if pgrep -x dpkg >/dev/null 2>&1 || pgrep -x apt-get >/dev/null 2>&1 || pgrep -x apt >/dev/null 2>&1; then
+        return 1
+    fi
+    rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock 2>/dev/null
+    rm -f /var/lib/apt/lists/lock /var/cache/apt/archives/lock 2>/dev/null
+    return 0
+}
+
 if command -v apt >/dev/null 2>&1; then
     if [ "$IS_PVE" -eq 0 ]; then
-        pkill -9 -x apt-get 2>/dev/null
-        pkill -9 -x apt     2>/dev/null
-        pkill -9 -x dpkg    2>/dev/null
+        if wait_dpkg_lock; then
+            DEBIAN_FRONTEND=noninteractive dpkg --configure -a --force-confold >/dev/null 2>&1
+            apt autoremove --purge -y >/dev/null 2>&1
+        fi
+        apt clean -y >/dev/null 2>&1
+        apt autoclean -y >/dev/null 2>&1
     fi
-    rm -f /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock
-    DEBIAN_FRONTEND=noninteractive dpkg --configure -a --force-confold 2>/dev/null
-    apt autoremove --purge -y
-    apt clean -y
-    apt autoclean -y
-    journalctl --rotate
-    journalctl --vacuum-size=10M
+    if command -v journalctl >/dev/null 2>&1; then
+        journalctl --rotate >/dev/null 2>&1
+        if [ "$IS_PVE" -eq 1 ] || [ -z "$JOURNAL_MAX_TIME" ]; then
+            journalctl --vacuum-size="$JOURNAL_MAX_SIZE" >/dev/null 2>&1
+        else
+            journalctl --vacuum-time="$JOURNAL_MAX_TIME" >/dev/null 2>&1
+            journalctl --vacuum-size="$JOURNAL_MAX_SIZE" >/dev/null 2>&1
+        fi
+    fi
 elif command -v apk >/dev/null 2>&1; then
-    apk cache clean
+    apk cache clean >/dev/null 2>&1
     find /var/log -mindepth 1 \
         -path "/var/log/cdt" -prune -o \
         -type f -exec truncate -s 0 {} + 2>/dev/null
@@ -676,58 +876,103 @@ elif command -v apk >/dev/null 2>&1; then
 fi
 
 if command -v docker >/dev/null 2>&1; then
-    docker image prune -a -f
-    find /var/lib/docker/containers/ -name "*.log" -exec truncate -s 0 {} \;
+    docker image prune -a -f >/dev/null 2>&1
+    find /var/lib/docker/containers/ -name "*.log" -exec truncate -s 0 {} \; 2>/dev/null
 fi
 
-# ---------- 1G 硬盘专属深度清理 ----------
-# 文档 / man / 本机终端字体
-rm -rf /usr/share/doc/* 2>/dev/null
-rm -rf /usr/share/man/* 2>/dev/null
-rm -rf /usr/share/consolefonts/* 2>/dev/null
-# i18n 字符集 + locale 文件（保留 UTF-8 / en / zh / i18n 命名）
-find /usr/share/i18n/charmaps -type f ! -name '*UTF-8*' -delete 2>/dev/null
-find /usr/share/i18n/locales -type f ! -name '*en*' ! -name '*zh*' ! -name 'i18n*' -delete 2>/dev/null
-# terminfo（保留常用终端类型）
-find /usr/share/terminfo -type f ! -name 'xterm*' ! -name 'linux' ! -name 'screen*' ! -name 'vt*' ! -name 'ansi' ! -name 'dumb' -delete 2>/dev/null
-# locale（保留 en / zh）
-( cd /usr/share/locale 2>/dev/null && ls 2>/dev/null | grep -vE '^(en|zh|en_US|zh_CN|zh_TW|locale.alias)$' | xargs rm -rf 2>/dev/null )
-# 云 VPS 用不到的固件
-rm -rf /usr/lib/firmware/{netronome,sb16,ath10k,ath11k,iwlwifi,bnx2,bnx2x,brcm,mellanox,qcom,ti} 2>/dev/null
-# Python 编译缓存
-find /usr/lib/python3.13 -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null
-# aliyun-assist 旧版本目录（优先保留 symlink 指向的运行版本；symlink 失效时退回"版本号最大"）
-if [ -d /usr/local/share/aliyun-assist ]; then
-    _aliyun_symlink="/usr/local/share/aliyun-assist/aliyun-service.symlink"
-    _aliyun_keep=""
-    if [ -L "$_aliyun_symlink" ]; then
-        _aliyun_keep=$(basename "$(dirname "$(readlink "$_aliyun_symlink")")")
+# 清理模块扩展：1G 硬盘版深度清理
+deep_clean() {
+    # 文档 / man / 本机终端字体
+    rm -rf /usr/share/doc/* 2>/dev/null
+    rm -rf /usr/share/man/* 2>/dev/null
+    rm -rf /usr/share/consolefonts/* 2>/dev/null
+
+    # i18n 字符集 + locale 定义（保留 UTF-8 / en / zh / i18n 命名）
+    find /usr/share/i18n/charmaps -type f ! -name '*UTF-8*' -delete 2>/dev/null
+    find /usr/share/i18n/locales -type f ! -name '*en*' ! -name '*zh*' ! -name 'i18n*' -delete 2>/dev/null
+
+    # terminfo（保留常用终端类型，含 tmux / screen 等复用库）
+    find /usr/share/terminfo -type f \
+        ! -name 'xterm*' ! -name 'linux' ! -name 'screen*' ! -name 'tmux*' \
+        ! -name 'vt*' ! -name 'ansi' ! -name 'dumb' ! -name 'rxvt*' \
+        ! -name 'alacritty*' ! -name 'foot*' ! -name 'putty*' -delete 2>/dev/null
+
+    # locale 消息目录（保留 en / zh 全系 + 别名）
+    if [ -d /usr/share/locale ]; then
+        find /usr/share/locale -mindepth 1 -maxdepth 1 \
+            ! -name 'en' ! -name 'en_*' ! -name 'zh' ! -name 'zh_*' \
+            ! -name 'locale.alias' -exec rm -rf {} + 2>/dev/null
     fi
-    if [ -z "$_aliyun_keep" ]; then
-        _aliyun_keep=$(ls -1 /usr/local/share/aliyun-assist/ 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+
+    # 云 VPS 用不到的无线 / 网卡固件
+    # 注意：不能用 {a,b,c} 大括号展开，Debian/Ubuntu 的 /bin/sh 是 dash，不支持
+    for _fw in netronome sb16 ath10k ath11k iwlwifi bnx2 bnx2x brcm mellanox qcom ti; do
+        rm -rf "/usr/lib/firmware/$_fw" 2>/dev/null
+    done
+
+    # Python 编译缓存（不写死版本号）
+    for _pydir in /usr/lib/python3* /usr/local/lib/python3*; do
+        [ -d "$_pydir" ] || continue
+        find "$_pydir" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null
+    done
+
+    # aliyun-assist 旧版本目录（优先保留 symlink 指向的运行版本，失效时取最大版本号）
+    if [ -d /usr/local/share/aliyun-assist ]; then
+        _aliyun_symlink="/usr/local/share/aliyun-assist/aliyun-service.symlink"
+        _aliyun_keep=""
+        if [ -L "$_aliyun_symlink" ]; then
+            _aliyun_keep=$(basename "$(dirname "$(readlink "$_aliyun_symlink")")" 2>/dev/null)
+        fi
+        if [ -z "$_aliyun_keep" ]; then
+            _aliyun_keep=$(ls -1 /usr/local/share/aliyun-assist/ 2>/dev/null \
+                | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+                | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | tail -1)
+        fi
+        # 只有确认是版本号格式才进入删除循环，防止 symlink 内容异常时误删全部
+        if [ -n "$_aliyun_keep" ] && echo "$_aliyun_keep" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+            for _v in /usr/local/share/aliyun-assist/[0-9]*/; do
+                [ -d "$_v" ] || continue
+                _vname=$(basename "$_v")
+                [ "$_vname" = "$_aliyun_keep" ] && continue
+                rm -rf "$_v" 2>/dev/null
+            done
+        fi
     fi
-    # 只有确认是版本号格式才进入删除循环（防止 symlink 内容异常时误删全部）
-    if [ -n "$_aliyun_keep" ] && echo "$_aliyun_keep" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
-        for _v in /usr/local/share/aliyun-assist/[0-9]*/; do
-            [ -d "$_v" ] || continue
-            _vname=$(basename "$_v")
-            [ "$_vname" = "$_aliyun_keep" ] && continue
-            rm -rf "$_v" 2>/dev/null
-        done
-    fi
-fi
-# 旧日志（cdt 豁免）
-find /var/log -type f \( -name '*.gz' -o -name '*.1' -o -name '*.old' \) ! -path '/var/log/cdt/*' -delete 2>/dev/null
+
+    # 旧日志（cdt 目录豁免）
+    find /var/log -type f \( -name '*.gz' -o -name '*.1' -o -name '*.old' \) ! -path '/var/log/cdt/*' -delete 2>/dev/null
+}
+
+deep_clean
 CLEANEOF
-    chmod +x "$CLEAN_PATH"
-    (crontab -l 2>/dev/null | grep -v "$CLEAN_PATH"; echo "6 6 * * 1 $CLEAN_PATH > /dev/null 2>&1") | crontab -
-    printf "  ${GREEN}> 存储守护已部署 (每周一 06:06)${NC}\n"
-    REPORT_CRON="${GREEN}已部署 (每周一 06:06)${NC}"
+        sed -i "s|@JOURNAL_MAX_SIZE@|${JOURNAL_MAX_SIZE}|g; s|@JOURNAL_MAX_TIME@|${JOURNAL_MAX_TIME}|g" "$CLEAN_PATH"
+        chmod +x "$CLEAN_PATH"
+        if (crontab -l 2>/dev/null | grep -v "$CLEAN_PATH"; printf '6 6 * * 1 %s > /dev/null 2>&1\n' "$CLEAN_PATH") | crontab - 2>/dev/null; then
+            if crontab -l 2>/dev/null | grep -q "$CLEAN_PATH"; then
+                printf "  ${GREEN}> 存储守护已部署 (每周一 06:06)${NC}\n"
+                REPORT_CRON="${GREEN}已部署 (每周一 06:06)${NC}"
+            else
+                printf "  ${RED}> 写入 crontab 后回读校验失败${NC}\n"
+                REPORT_CRON="${RED}部署失败${NC}"
+            fi
+        else
+            printf "  ${RED}> 写入 crontab 失败（cron 服务可能未安装）${NC}\n"
+            REPORT_CRON="${RED}部署失败${NC}"
+        fi
+
+        if [ "$OS" = "Alpine" ]; then
+            pgrep -x crond >/dev/null 2>&1 || printf "  ${YELLOW}> 注意: crond 未运行，任务不会触发（rc-service crond start）${NC}\n"
+        else
+            if ! systemctl is-active --quiet cron 2>/dev/null && ! systemctl is-active --quiet crond 2>/dev/null; then
+                printf "  ${YELLOW}> 注意: cron 服务未运行，任务不会触发（systemctl enable --now cron）${NC}\n"
+            fi
+        fi
+    fi
 fi
 
 # 4.6 即时清理
 printf "即时清理 : 是否立即执行一次系统清理? [Y/n]: "
-read clean_confirm
+read -r clean_confirm
 clean_confirm=${clean_confirm:-"y"}
 
 if [ "$clean_confirm" = "y" ] || [ "$clean_confirm" = "Y" ]; then

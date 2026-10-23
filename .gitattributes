@@ -1,0 +1,4 @@
+# 统一使用 LF：脚本通过 curl 原始下载后直接在 Linux 执行，
+# 一旦带上 CRLF，`#!/bin/sh\r` 会让所有下载者执行失败。
+* text=auto eol=lf
+*.sh text eol=lf

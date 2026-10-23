@@ -56,7 +56,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/BeacherZ/vps99.sh/main/vps99
 - 未安装：菜单显示 `1) 安装  2) 跳过`
 - 安装 / 更新自动跳过 Docker 官方脚本 20 秒等待
 - 下载安装脚本带 60 秒超时保护，失败时明确提示（不误报成功）
-- 安装前自动修复 dpkg 锁状态
+- 安装前等待 dpkg 锁释放（最长 300 秒，不 kill 运行中的 apt/dpkg）
 - 安装后验证并显示实际版本，失败时明确提示
 - ⚠️ **卸载包含清理 `/var/lib/docker` 和 `/var/lib/containerd`，请谨慎操作**
 
@@ -70,10 +70,10 @@ bash <(curl -fsSL https://raw.githubusercontent.com/BeacherZ/vps99.sh/main/vps99
 
 - 默认 N，需手动确认
 - 部署 `/root/vps99clean.sh` 定时任务脚本，每周一 06:06 自动执行
-- Debian/Ubuntu：修复 dpkg 锁 + apt 深度清理 + journalctl 保留 7 天 + 限制日志 100M
+- Debian/Ubuntu：等待 dpkg 锁 + apt 深度清理 + journalctl 保留 7 天 + 限制日志 100M
 - Alpine：清空 `/var/log` 下文件内容，清理 apk 缓存和临时文件
 - Docker：清理所有未被容器使用的镜像（含悬空镜像）+ 截断容器日志
-- PVE 保护：跳过 `pkill apt/dpkg`，跳过 `journalctl --vacuum-time`，只限制日志 100M
+- PVE 保护：跳过 `apt autoremove` / `apt clean`，跳过 `journalctl --vacuum-time`，只限制日志 100M
 - 使用 `--force-confold` 确保 cron 无人值守执行不卡住
 
 ### 即时清理
@@ -106,7 +106,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/BeacherZ/vps99.sh/main/vps99
 
 **安全清理**：Alpine 系统使用 `truncate` 清空日志文件内容，保留文件和目录结构，不会导致 nginx 等服务因找不到日志目录而崩溃。
 
-**PVE 兼容**：脚本通过 `command -v pveversion` 自动检测 PVE 宿主机，跳过 `pkill apt/dpkg` 和 `journalctl --vacuum-time`，只做安全的缓存清理和日志限大小（100M），不影响宿主机稳定性。
+**PVE 兼容**：脚本通过 `command -v pveversion` 自动检测 PVE 宿主机，跳过 `apt autoremove` / `apt clean` 和 `journalctl --vacuum-time`，只做日志限大小（100M）与 Docker 垃圾清理，不在宿主机上卸载任何包。
 
 **默认保守**：除即时清理默认 Y 外，所有功能模块默认 N。每个选项执行后立即显示绿色结果反馈。
 
