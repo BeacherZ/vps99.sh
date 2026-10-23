@@ -131,7 +131,7 @@ bash <(curl -fsSL https://raw.githubusercontent.com/BeacherZ/vps99.sh/main/vps99
 | 项目 | 通用版 | 1G 专属版 |
 |------|--------|----------|
 | journalctl 上限 | 7d + 100M | **10M** |
-| 深度清理 | 无 | **doc / man / consolefonts / i18n / terminfo / locale / firmware / pycache** |
+| 深度清理 | 无 | **doc / man / consolefonts / i18n / terminfo / locale / firmware / pycache / 旧轮转日志** |
 | aliyun-assist | 不动 | **只保留最新版本目录，删旧版本** |
 | 清理子脚本 | `/root/vps99clean.sh` | `/root/vps99clean-1g.sh` |
 
