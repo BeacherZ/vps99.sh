@@ -227,8 +227,10 @@ remove_docker() {
 }
 
 check_docker_latest() {
-    # docker/cli 与 docker-ce 发行包版本同步，比 moby/moby 源码 tag 更贴近实际包版本
-    LATEST_DOCKER=$(curl -fsS --connect-timeout 3 --max-time 5 "https://api.github.com/repos/docker/cli/releases/latest" 2>/dev/null | grep '"tag_name"' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+    # 数据源必须用 moby/moby：其 latest release 的 tag 形如 docker-v29.9.2
+    # 不要换成 docker/cli —— 该仓库没有标记 latest 的 release，接口稳定返回 404，
+    # 会导致每次都取不到版本、永远显示"查询超时，跳过更新检查"。
+    LATEST_DOCKER=$(curl -fsS --connect-timeout 3 --max-time 5 "https://api.github.com/repos/moby/moby/releases/latest" 2>/dev/null | grep '"tag_name"' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
     LATEST_COMPOSE=$(curl -fsS --connect-timeout 3 --max-time 5 "https://api.github.com/repos/docker/compose/releases/latest" 2>/dev/null | grep '"tag_name"' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
 }
 
