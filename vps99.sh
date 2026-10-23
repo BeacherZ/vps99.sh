@@ -21,6 +21,9 @@ NC='\033[0m'
 
 NEED_REBOOT=0
 REBOOT_REASON=""
+# 本次是否真的改了东西（区别于"需要重启"）：
+# 不需要重启有两种情况 —— 改了但即时生效 / 什么都没改，结尾提示必须分开说
+CHANGED=0
 
 # ------------------------------------------------------------------------------
 # 运行前置检查：必须有 root 权限 + 交互式终端
@@ -435,6 +438,7 @@ if [ "$bbr_confirm" = "y" ] || [ "$bbr_confirm" = "Y" ]; then
         if [ "$now_cc" = "bbr" ] && [ "$now_qdisc" = "fq" ]; then
             printf "  ${GREEN}> BBR+FQ 已配置并立即生效，无需重启${NC}\n"
             REPORT_BBR="${GREEN}BBR+FQ 已开启${NC}"
+            CHANGED=1
         else
             printf "  ${YELLOW}> BBR+FQ 已写入配置，但未立即生效，重启后激活${NC}\n"
             REPORT_BBR="${GREEN}BBR+FQ 已配置（待重启）${NC}"
@@ -492,6 +496,7 @@ if [ "$zram_confirm" = "y" ] || [ "$zram_confirm" = "Y" ]; then
     if [ "$ZRAM_OK" -eq 1 ]; then
         printf "  ${GREEN}> zRAM 已部署 (${zram_size}MB / swappiness=${swap_p})${NC}\n"
         REPORT_ZRAM="${GREEN}已部署 (${zram_size}MB)${NC}"
+        CHANGED=1
         if [ "$HAS_ZRAM" -eq 0 ]; then
             NEED_REBOOT=1
             REBOOT_REASON="${REBOOT_REASON:+$REBOOT_REASON }zRAM 服务首次加载需重启;"
@@ -644,6 +649,7 @@ if [ "$docker_enter" = "y" ] || [ "$docker_enter" = "Y" ]; then
                 if [ $HAS_DOCKER -eq 0 ]; then
                     printf "  ${GREEN}> Docker ${NEW_DOCKER_VER} / Compose ${NEW_COMPOSE_VER} 安装成功${NC}\n"
                     REPORT_DOCKER="${GREEN}Docker ${NEW_DOCKER_VER} / Compose ${NEW_COMPOSE_VER}${NC}"
+                    CHANGED=1
                 else
                     DOCKER_UPDATED=0
                     COMPOSE_UPDATED=0
@@ -653,6 +659,7 @@ if [ "$docker_enter" = "y" ] || [ "$docker_enter" = "Y" ]; then
                     if [ $DOCKER_UPDATED -eq 1 ] || [ $COMPOSE_UPDATED -eq 1 ]; then
                         printf "  ${GREEN}> Docker ${NEW_DOCKER_VER} / Compose ${NEW_COMPOSE_VER} 更新成功${NC}\n"
                         REPORT_DOCKER="${GREEN}Docker ${NEW_DOCKER_VER} / Compose ${NEW_COMPOSE_VER}${NC}"
+                        CHANGED=1
                     else
                         printf "  ${RED}> 更新失败，版本未变 (Docker ${NEW_DOCKER_VER} / Compose ${NEW_COMPOSE_VER})${NC}\n"
                         REPORT_DOCKER="${RED}更新失败 (${NEW_DOCKER_VER} / ${NEW_COMPOSE_VER})${NC}"
@@ -684,6 +691,7 @@ if [ "$docker_enter" = "y" ] || [ "$docker_enter" = "Y" ]; then
                 if ! command -v docker >/dev/null 2>&1; then
                     printf "  ${GREEN}> Docker & Compose 卸载成功${NC}\n"
                     REPORT_DOCKER="${GREEN}已卸载${NC}"
+                    CHANGED=1
                 else
                     printf "  ${RED}> 卸载失败${NC}\n"
                     REPORT_DOCKER="${RED}卸载失败${NC}"
@@ -727,6 +735,7 @@ if [ "$tz_confirm" = "y" ] || [ "$tz_confirm" = "Y" ]; then
     if [ "$TZ_OK" -eq 1 ]; then
         printf "  ${GREEN}> 时区已设置为 Asia/Shanghai${NC}\n"
         REPORT_TZ="${GREEN}Asia/Shanghai${NC}"
+        CHANGED=1
     else
         printf "  ${RED}> 时区设置失败（时区数据缺失或权限不足）${NC}\n"
         REPORT_TZ="${RED}设置失败${NC}"
@@ -830,6 +839,7 @@ CLEANEOF
             if crontab -l 2>/dev/null | grep -q "$CLEAN_PATH"; then
                 printf "  ${GREEN}> 存储守护已部署 (每周一 06:06)${NC}\n"
                 REPORT_CRON="${GREEN}已部署 (每周一 06:06)${NC}"
+                CHANGED=1
             else
                 printf "  ${RED}> 写入 crontab 后回读校验失败${NC}\n"
                 REPORT_CRON="${RED}部署失败${NC}"
@@ -859,6 +869,7 @@ if [ "$clean_confirm" = "y" ] || [ "$clean_confirm" = "Y" ]; then
     do_clean >/dev/null 2>&1
     printf "  ${GREEN}> 清理完成${NC}\n"
     REPORT_CLEAN="${GREEN}已执行${NC}"
+    CHANGED=1
 fi
 
 printf "\n${GREEN}==================== [ 3. 任务执行汇报 ] ====================${NC}\n"
@@ -877,6 +888,9 @@ if [ $NEED_REBOOT -eq 1 ]; then
     printf "${RED}!! 警告：检测到内核改动，请务必执行 [ reboot ] 以激活优化 !!${NC}\n"
     [ -n "$REBOOT_REASON" ] && printf "${RED}   原因：${REBOOT_REASON}${NC}\n"
     printf "${RED}============================================================${NC}\n\n"
+elif [ $CHANGED -eq 1 ]; then
+    # 改动都落在用户态或已通过 sysctl / systemctl 即时生效，不需要重启
+    printf "\n${GREEN}--- 任务完成！本次改动均已即时生效，无需重启。---${NC}\n\n"
 else
-    printf "\n${GREEN}--- 任务完成！本次未改动核心参数，无需重启。---${NC}\n\n"
+    printf "\n${GREEN}--- 任务完成！本次未做任何改动。---${NC}\n\n"
 fi
